@@ -1,1 +1,2 @@
-print("Hello from apple.py")
+-p "What is the content of apple.py? Print exact file contents without backticks."
+
