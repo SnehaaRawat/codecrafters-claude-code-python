@@ -1,24 +1,80 @@
 import argparse
+import json
 import os
 import sys
-import json
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 from openai import OpenAI
 
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
+IS_LOCAL = os.getenv("IS_LOCAL", False)
 
 
-def read(file_path: str) -> str:
-    """Read and return the contents of a file.
+class Tool:
+    def describe(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": self.properties,
+                    "required": self.required_properties,
+                },
+            },
+        }
 
-    Args:
-        file_path: The path to the file to read
-    """
-    with open(file_path, "r") as f:
-        return f.read()
+    def execute(self, **kwargs):
+        raise RuntimeError("Not implemented")
 
 
-TOOLS = {"read": read}
+class ReadTool(Tool):
+    name = "Read"
+    description = "Read and return the contents of a file"
+    properties = {
+        "file_path": {
+            "type": "string",
+            "description": "The path to the file to read",
+        }
+    }
+    required_properties = ["file_path"]
+
+    def execute(self, **kwargs):
+        return Path(kwargs["file_path"]).read_text()
+
+
+class WriteTool(Tool):
+    name = "Write"
+    description = "Write content to a file"
+    properties = {
+        "file_path": {
+            "type": "string",
+            "description": "The path of the file to write to",
+        },
+        "content": {
+            "type": "string",
+            "description": "The content to write to the file",
+        },
+    }
+    required_properties = ["file_path", "content"]
+
+    def execute(self, **kwargs):
+        Path(kwargs["file_path"]).write_text(kwargs["content"])
+        return Path(kwargs["file_path"]).read_text()
+
+
+TOOLS = {
+    ReadTool.name: ReadTool(),
+    WriteTool.name: WriteTool(),
+}
 
 
 def main():
@@ -30,54 +86,39 @@ def main():
         raise RuntimeError("OPENROUTER_API_KEY is not set")
 
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-
+    model = "z-ai/glm-4.5-air:free" if IS_LOCAL else "anthropic/claude-haiku-4.5"
     messages = [{"role": "user", "content": args.p}]
+
+    tool_descriptions = [tool.describe() for tool in TOOLS.values()]
+
     while True:
         chat = client.chat.completions.create(
-            model="anthropic/claude-haiku-4.5",
+            model=model,
             messages=messages,
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "read",
-                        "description": "Read and return the contents of a file",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "file_path": {
-                                    "type": "string",
-                                    "description": "The path to the file to read",
-                                }
-                            },
-                            "required": ["file_path"],
-                        },
-                    },
-                }
-            ],
+            tools=tool_descriptions,
         )
+
         if not chat.choices or len(chat.choices) == 0:
             raise RuntimeError("no choices in response")
 
         message = chat.choices[0].message
         messages.append(message)
+        tool_calls = chat.choices[0].message.tool_calls
 
-        if message.tool_calls:
-            for tool_call in message.tool_calls:
-                fn = tool_call.function
-                function = fn.name
-                args = json.loads(fn.arguments)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": TOOLS[function](**args),
-                    }
-                )
-        if chat.choices[0].finish_reason == "stop":
+        if not tool_calls:
+            print(message.content)
             break
-    print(chat.choices[0].message.content)
+
+        for tool_call in tool_calls:
+            function = tool_call.function
+            arguments = json.loads(function.arguments)
+            tool = TOOLS[function.name]
+            result = tool.execute(**arguments)
+            messages.append(
+                {"role": "tool", "tool_call_id": tool_call.id, "content": result}
+            )
 
 
 if __name__ == "__main__":
     main()
+

@@ -1,1 +1,1 @@
-$ ./your_program.sh -p "Use README.md to determine the chemical expiry period in months. Number only."
+$ ./your_program.sh -p "Read README.md and create the required file. File should have 1 line. Reply with 'Created the file'"
